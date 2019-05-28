@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS CloudFormation template to launch apache webserver and serve html file
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      CidrBlock: 10.0.0.0/16
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  VPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetNetworkAclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      NetworkAclId: !GetAtt
+        - VPC
+        - DefaultNetworkAcl
+  WebServerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable HTTP ingress
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+  WebServerInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-8c1be5f6
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref WebServerSecurityGroup
+          AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+          SubnetId: !Ref PublicSubnet
+      KeyName: !Ref 'KeyName'
+      UserData:
+        Fn::Base64:
+          !Sub |
+           #!/bin/bash -x
+           yum update -y
+           yum install git gcc gcc-c++ autoconf automake -y
+           cd /opt
+           git clone https://github.com/mayur122/Mayur.git /opt/test
+           tar xvfz test/www.tar.gz
+           cd /opt/www/webserver/2.4.17/conf
+           hostname -i > test.txt
+           export ip=$(cat test.txt | cut -d : -f 1 | cut -d @ -f 1)
+           sed -i -e "s/10.0.0.218/$ip/g" httpd.conf
+           sed -i -e "s/10.0.0.218/$ip/g" extra/httpd-ssl.conf
+           openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 -subj "/C=US/ST=Denial/L=Springfield/O=Dis/CN=hostname -i" -keyout /opt/www/webserver/2.4.17/conf/server.key -out  /opt/www/webserver/2.4.17/conf/server.crt
+           echo "<html><head><title>Hello World</title></head><body><h1>Hello World!</h1></body></html>" > /opt/www/webserver/2.4.17/htdocs/index.html
+           service httpd start
+
+Outputs:
+  URL:
+    Description: URL of the website
+    Value: !Join
+      - ''
+      - - 'https://'
+        - !GetAtt
+          - WebServerInstance
+          - PublicDnsName
